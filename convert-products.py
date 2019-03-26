@@ -1,4 +1,5 @@
 import mysql.connector
+import csv
 import re
 
 mySQLconnection = mysql.connector.connect(host='127.0.0.1', database='processwire', user='processwire', password='processwire')
@@ -23,13 +24,10 @@ def getProduct(product_id, variation_id, product_type):
   p = {}
 
   # sku
-  p['sku'] = 'PW-' + str(product_id if is_configurable else variation_id)
+  p['sku'] = 'PW' + str(product_id if is_configurable else variation_id)
 
   # store_view_code
   p['store_view_code'] = ''
-
-  # attribute_set_code
-  p['attribute_set_code'] = 'Default'
 
   # product_type
   p['product_type'] = product_type
@@ -157,6 +155,22 @@ def getProduct(product_id, variation_id, product_type):
   # display_product_options_in
   p['display_product_options_in'] = 'Block after Info Column'
 
+  # additional_attributes
+  if is_virtual:
+    r = q1("select data from field_product_size where pages_id=%d limit 1" % variation_id)
+    p['additional_attributes'] = r[0]
+  else:
+    p['additional_attributes'] = ''
+
+  # attribute_set_code
+  p['attribute_set_code'] = 'Default'
+
+  # configurable_variations
+  p['configurable_variations'] = ''
+
+  # configurable_variation_labels
+  p['configurable_variation_labels'] = ''
+
   return p
 
 def getProductsFromCat(cat_id):
@@ -166,17 +180,40 @@ def getProductsFromCat(cat_id):
     variations = q("select v.data from field_variations v, pages p where v.data=p.id and p.status=1 and v.pages_id=%d order by v.sort" % product[0])
     
     if len(variations) > 1:
-      products.append(getProduct(product[0], variations[0][0], 'configurable'))
+      new_product = getProduct(product[0], variations[0][0], 'configurable')
+      attribute_set_code = 'SET-' + new_product['sku']
+      additional_attribute_name = 'ATT-' + new_product['sku']
+
+      new_product['attribute_set_code'] = attribute_set_code
+      new_product['configurable_variation_labels'] = additional_attribute_name + '=Taille'
+      new_product['configurable_variations'] = []
+      products.append(new_product)
 
       for variation in variations:
-        products.append(getProduct(product[0], variation[0], 'virtual'))
+        new_variation = getProduct(product[0], variation[0], 'virtual')
+        new_variation['attribute_set_code'] = attribute_set_code
+        new_variation['additional_attributes'] = additional_attribute_name + '=' + new_variation['additional_attributes']
+        new_product['configurable_variations'].append('sku=' + new_variation['sku'] + ',' + new_variation['additional_attributes'])
+        products.append(new_variation)
+
+      new_product['configurable_variations'] = '|'.join(new_product['configurable_variations'])
 
     elif len(variations) == 1:
       products.append(getProduct(product[0], variations[0][0], 'simple'))
 
   return products
 
-for p in getProductsFromCat(5684):
-  print(p)
+products = getProductsFromCat(5684)
+fields = list(products[0].keys())
+
+with open('export_to_magento.csv', 'w') as csvfile:
+  filewriter = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+  filewriter.writerow(fields)
+
+  for product in products:
+    csv_line = []
+    for field in fields:
+      csv_line.append(str(product[field]))
+    filewriter.writerow(csv_line)
 
 mySQLconnection.close()
