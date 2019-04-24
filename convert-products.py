@@ -6,7 +6,19 @@ import glob
 import shutil
 from collections import OrderedDict
 
-mySQLconnection = mysql.connector.connect(host='127.0.0.1', database='processwire20180807__', user='processwire', password='processwire')
+mySQLconnection = mysql.connector.connect(host='127.0.0.1', database='processwire_20190422', user='processwire', password='processwire')
+
+# select distinct cat.pages_id, ti.data from field_cat_products cat, field_title ti where cat.pages_id=ti.pages_id;
+categories = OrderedDict([
+  (5684, "Nutrition & Alimentation certifiée Bio - Natürlich Pferd"),
+  (2432, "HBD Agrar"),
+  (2433, "Filets & Coffres à Foin"),
+  (2434, "Floating Boots"),
+  (2435, "Produits de Soins BIO, Naturels & Particulières"),
+  (3781, "LaBona"),
+  (4639, "Phytorigins®"),
+  (6377, "Produits artisanaux en Biothane  - Equiteam®")
+])
 
 def q(query):
   cursor = mySQLconnection.cursor()
@@ -26,13 +38,13 @@ def import_img(img_name):
 
   os.makedirs('./export_to_magento' + img_path, exist_ok=True)
   pw_fullname = glob.glob('/var/www/processwire/site/assets/files/**/' + img_name, recursive=True)
-#  shutil.copyfile(pw_fullname[0], './export_to_magento' + img_fullname)
+  #shutil.copyfile(pw_fullname[0], './export_to_magento' + img_fullname)
 
   return img_fullname
 
 url_key_pw = []
 
-def getProduct(product_id, variation_id, product_type, lang):
+def getProduct(cat_id, product_id, variation_id, product_type, lang):
   is_simple = (product_type == 'simple')
   is_configurable = (product_type == 'configurable')
   is_virtual = (product_type == 'virtual')
@@ -87,7 +99,7 @@ def getProduct(product_id, variation_id, product_type, lang):
   p['product_type'] = ('simple' if is_virtual else product_type)
 
   # categories
-  p['categories'] = "Default Category/Nutrition & Alimentation certifiée Bio - Natürlich Pferd"
+  p['categories'] = "Default Category/" + categories[cat_id]
 
   # product_websites
   p['product_websites'] = 'base'
@@ -124,6 +136,10 @@ def getProduct(product_id, variation_id, product_type, lang):
 
   # meta_title
   r = q1("select data%s from field_meta_description where pages_id=%d limit 1" % (lang[1], (product_id if is_configurable else variation_id)))
+
+  if not r and not is_configurable:
+    r = q1("select data%s from field_meta_description where pages_id=%d limit 1" % (lang[1], product_id))
+
   meta = r[0]
   p['meta_title'] = meta[:75]
 
@@ -144,7 +160,7 @@ def getProduct(product_id, variation_id, product_type, lang):
     weight = '' # in g
     if extracted_weight:
       extracted_unit = extracted_weight.group(2)
-      extracted_weight = float(extracted_weight.group(1))
+      extracted_weight = float(extracted_weight.group(1).replace(',', '.'))
       if extracted_unit == 'mg':
         weight = extracted_weight / 1000
       elif extracted_unit == 'gr' or extracted_unit == 'g':
@@ -220,37 +236,75 @@ def getProduct(product_id, variation_id, product_type, lang):
       r = q1("select data%s from field_product_size where pages_id=%d limit 1" % (lang[1], variation_id))
       p['additional_attributes'] = r[0]
 
-      if (product_id == 5701 or product_id == 7045) or (str(weight) != '' and re.match(r'^\s*([0-9]+[.,]?[0-9]*)\s*(mg|g|gr|kg)\s*$', r[0].lower())):
-        p['additional_attributes'] = 'weight'
-
   return p
 
 attribute_set_pw = OrderedDict()
+attribute_set_pw['poids'] = []
+attribute_set_pw['volume'] = []
 
-def getAttributeName(product, virtuals):
-  values = []
-  attribute_name = 'ATT-' + product['sku']
+def setProductAttributes(product, virtuals):
+  additional_attributes = []
+  configurable_variation_labels = []
+  extracted_attributes = []
   only_weight = True
+  only_volume = True
+
+  attribute_name_base = 'ATT-' + product['sku']
 
   for virtual in virtuals:
-    if virtual['additional_attributes'] == 'weight':
-      values.append(virtual['weight'])
-    else:
-      values.append(virtual['additional_attributes'])
+    if not re.match(r'\b[0-9]+[.,]?[0-9]*\s*(mg|g|gr|kg)\b', virtual['additional_attributes'].lower()) or virtual['weight'] == '':
       only_weight = False
+    if not re.match(r'\b[0-9]+[.,]?[0-9]*\s*ml\b', virtual['additional_attributes'].lower()):
+      only_volume = False
 
   if only_weight:
-    attribute_name = 'Poids'
-
-  if attribute_name in attribute_set_pw:
-    attribute_set_pw[attribute_name] = attribute_set_pw[attribute_name] + values
+    configurable_variation_labels = [ 'poids=Poids' ]
+  elif only_volume:
+    configurable_variation_labels = [ 'volume=Volume' ]
   else:
-    attribute_set_pw[attribute_name] = values
+    for virtual in virtuals:
+      virtual['additional_attributes'] = re.split(r'\s*//\s*', virtual['additional_attributes'])
 
-  attribute_set_pw[attribute_name] = list(set(attribute_set_pw[attribute_name]))
-  attribute_set_pw[attribute_name].sort()
+      for i in range(len(virtual['additional_attributes'])):
+        if i >= len(extracted_attributes):
+          extracted_attributes.append([])
 
-  return attribute_name
+        extracted_attributes[i].append(virtual['additional_attributes'][i])
+
+      for i in range(len(extracted_attributes)):
+         extracted_attributes[i] = list(set(extracted_attributes[i]))
+
+  for virtual in virtuals:
+    if only_weight:
+      additional_attributes.append('poids=' + str(virtual['weight']))
+
+      if not (virtual['weight'] in attribute_set_pw['poids']):
+        attribute_set_pw['poids'].append(virtual['weight']) 
+
+    elif only_volume:
+      extracted_volume = re.search(r'\b([0-9]+[.,]?[0-9]*)\s*ml\b', virtual['additional_attributes'].lower())
+      extracted_volume = extracted_volume.group(1)
+      additional_attributes.append('volume=' + extracted_volume)
+
+      if not (extracted_volume in attribute_set_pw['volume']):
+        attribute_set_pw['volume'].append(extracted_volume)
+
+    else:
+      for additional_attribute in virtual['additional_attributes']:
+        for i in range(len(extracted_attributes)):
+         if additional_attribute in extracted_attributes[i]:
+          if len(extracted_attributes[i]) > 0:
+            additional_attributes.append(attribute_name_base + '-' + str(i) + '=' + str(extracted_attributes[i].index(additional_attribute)))
+            configurable_variation_labels.append(attribute_name_base + '-' + str(i) + '=' + attribute_name_base + '-' + str(i))
+          break
+
+      for i in range(len(extracted_attributes)):
+        if len(extracted_attributes[i]) > 0:
+          attribute_set_pw[attribute_name_base + '-' + str(i)] = extracted_attributes[i]
+
+    virtual['additional_attributes'] = ','.join(additional_attributes)
+
+  return ','.join(configurable_variation_labels)
 
 def getProductsFromCat(cat_id):
   attribute_set_code = 'PW-VARIATIONS'
@@ -264,64 +318,60 @@ def getProductsFromCat(cat_id):
     
     # configurable (default language)
     if len(variations) > 1:
-      new_product = getProduct(product[0], variations[0][0], 'configurable', default_lang)
+      new_product = getProduct(cat_id, product[0], variations[0][0], 'configurable', default_lang)
       products.append(new_product)
 
       # virtuals (default language)
       for variation in variations:
-        virtual = getProduct(product[0], variation[0], 'virtual', default_lang)
+        virtual = getProduct(cat_id, product[0], variation[0], 'virtual', default_lang)
         virtuals.append(virtual)
 
-      additional_attribute_name = getAttributeName(new_product, virtuals)
-
-      new_product['configurable_variation_labels'] = additional_attribute_name + '=Taille'
+      new_product['attribute_set_code'] = categories[cat_id]
+      new_product['configurable_variation_labels'] = setProductAttributes(new_product, virtuals)
       new_product['configurable_variations'] = []
 
       for virtual in virtuals:
-        if virtual['additional_attributes'] == 'weight':
-          virtual['additional_attributes'] = virtual['weight']
-        else:
-          virtual['additional_attributes'] = attribute_set_pw[additional_attribute_name].index(virtual['additional_attributes'])
-
-        virtual['additional_attributes'] = additional_attribute_name + '=' + str(virtual['additional_attributes'])
-        virtual['attribute_set_code'] = attribute_set_code
         new_product['configurable_variations'].append('sku=' + virtual['sku'] + ',' + virtual['additional_attributes'])
-
         products.append(virtual)
 
       new_product['configurable_variations'] = '|'.join(new_product['configurable_variations'])
 
       # configurable (other languages)
       for lang in other_langs:
-        new_product = getProduct(product[0], variations[0][0], 'configurable', lang)
+        new_product = getProduct(cat_id, product[0], variations[0][0], 'configurable', lang)
+        new_product['attribute_set_code'] = categories[cat_id]
         products.append(new_product)
 
       # virtuals (other languages)
       for lang in other_langs:
         for variation in variations:
-          virtual = getProduct(product[0], variation[0], 'virtual', lang)
-          virtual['attribute_set_code'] = attribute_set_code
+          virtual = getProduct(cat_id, product[0], variation[0], 'virtual', lang)
+          virtual['attribute_set_code'] = categories[cat_id]
           products.append(virtual)
 
     # simple
     elif len(variations) == 1:
       for lang in other_langs + [ default_lang ]:
-        products.append(getProduct(product[0], variations[0][0], 'simple', lang))
+        products.append(getProduct(cat_id, product[0], variations[0][0], 'simple', lang))
 
   return products
 
-products = getProductsFromCat(5684)
-fields = list(products[0].keys())
+products = []
 
-with open('export_to_magento.csv', 'w') as csvfile:
-  filewriter = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-  filewriter.writerow(fields)
+for cat_id in categories.keys():
+  products += getProductsFromCat(cat_id)
 
-  for product in products:
-    csv_line = []
-    for field in fields:
-      csv_line.append(str(product[field]))
-    filewriter.writerow(csv_line)
+#fields = list(products[0].keys())
+#
+#with open('export_to_magento.csv', 'w') as csvfile:
+#  filewriter = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+#  filewriter.writerow(fields)
+#
+#  for product in products:
+#    csv_line = []
+#    for field in fields:
+#      csv_line.append(str(product[field]))
+#    filewriter.writerow(csv_line)
 
 for attribute_name, values in attribute_set_pw.items():
   print(attribute_name)
