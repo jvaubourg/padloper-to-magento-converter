@@ -6,7 +6,8 @@ import glob
 import shutil
 from collections import OrderedDict
 
-mySQLconnection = mysql.connector.connect(host='127.0.0.1', database='processwire_20190422', user='processwire', password='processwire')
+#mySQLconnection = mysql.connector.connect(host='127.0.0.1', database='processwire_20190422', user='processwire', password='processwire')
+mySQLconnection = mysql.connector.connect(host='127.0.0.1', database='processwire_new', user='processwire', password='processwire')
 
 # select distinct cat.pages_id, ti.data from field_cat_products cat, field_title ti where cat.pages_id=ti.pages_id;
 categories = OrderedDict([
@@ -241,6 +242,9 @@ def getProduct(cat_id, product_id, variation_id, product_type, lang):
 attribute_set_pw = OrderedDict()
 attribute_set_pw['poids'] = []
 attribute_set_pw['volume'] = []
+attribute_set_pw['floating'] = []
+attribute_set_pw['color'] = []
+attribute_set_pw['ouverture'] = []
 
 def setProductAttributes(product, virtuals):
   additional_attributes = []
@@ -249,9 +253,14 @@ def setProductAttributes(product, virtuals):
   only_weight = True
   only_volume = True
 
-  attribute_name_base = 'ATT-' + product['sku']
+  attribute_name_base = 'https://cheval-ami.fr/produits/' + product['url_key'] + ' => ATT-' + product['sku']
 
+  # Check if all variations just correspond to weights or volumes or not 
   for virtual in virtuals:
+    if re.match(r'\s*//\s*', virtual['additional_attributes']):
+      only_weight = False
+      only_volume = False
+      break
     if not re.match(r'\b[0-9]+[.,]?[0-9]*\s*(mg|g|gr|kg)\b', virtual['additional_attributes'].lower()) or virtual['weight'] == '':
       only_weight = False
     if not re.match(r'\b[0-9]+[.,]?[0-9]*\s*ml\b', virtual['additional_attributes'].lower()):
@@ -262,18 +271,52 @@ def setProductAttributes(product, virtuals):
   elif only_volume:
     configurable_variation_labels = [ 'volume=Volume' ]
   else:
+    extracted_attributes_tmp = []
+
+    # Extract inline options and create anonymous attributes with them
     for virtual in virtuals:
       virtual['additional_attributes'] = re.split(r'\s*//\s*', virtual['additional_attributes'])
 
       for i in range(len(virtual['additional_attributes'])):
-        if i >= len(extracted_attributes):
-          extracted_attributes.append([])
+        virtual['additional_attributes'][i] = re.sub(r'Pièces latérales\s+', '', virtual['additional_attributes'][i])
+        virtual['additional_attributes'][i] = re.sub(r'fluorescente', 'fluorescent', virtual['additional_attributes'][i])
+        virtual['additional_attributes'][i] = re.sub(r'verte', 'vert', virtual['additional_attributes'][i])
+        virtual['additional_attributes'][i] = re.sub(r'Paire\s+', '', virtual['additional_attributes'][i])
+        virtual['additional_attributes'][i] = re.sub(r'Cuir\s+', '', virtual['additional_attributes'][i])
+        virtual['additional_attributes'][i] = re.sub(r'Brun sombre\s+', 'Marron foncé', virtual['additional_attributes'][i])
+        virtual['additional_attributes'][i] = re.sub(r'Pony', 'Poney', virtual['additional_attributes'][i])
+        virtual['additional_attributes'][i] = re.sub(r'3 x 0.2', '0.6', virtual['additional_attributes'][i])
+        virtual['additional_attributes'][i] = re.sub(r'5 x 1', '5', virtual['additional_attributes'][i])
+        virtual['additional_attributes'][i] = re.sub(r'5 x 1', '5', virtual['additional_attributes'][i])
+        virtual['additional_attributes'][i] = re.sub(r'sur le côté', 'côté', virtual['additional_attributes'][i])
 
-        extracted_attributes[i].append(virtual['additional_attributes'][i])
+      j = 0
+      for i in range(len(virtual['additional_attributes'])):
+        if re.match(r'[MP][0-9](-W)?', virtual['additional_attributes'][i]):
+          attribute_set_pw['floating'].append(virtual['additional_attributes'][i])
+        elif re.match(r'(vert|noir|sable|orange|fluorescent|rouge|marron foncé|marron rouge|noisette|bordeaux|havanna|cognac|anthracite)', virtual['additional_attributes'][i].lower()):
+          attribute_set_pw['color'].append(virtual['additional_attributes'][i].capitalize())
+        elif re.match(r'.*\s+(long|court)$', virtual['additional_attributes'][i].lower()):
+          attribute_set_pw['ouverture'].append(virtual['additional_attributes'][i].capitalize())
+        else:
+          if j >= len(extracted_attributes_tmp):
+            extracted_attributes_tmp.append([])
+  
+          extracted_attributes_tmp[j].append(virtual['additional_attributes'][i])
+          j = j+1
 
-      for i in range(len(extracted_attributes)):
-         extracted_attributes[i] = list(set(extracted_attributes[i]))
+    # Sort and remove duplicates options, then drop 1-value attributes
+    for i in range(len(extracted_attributes_tmp)):
+       extracted_attributes_tmp[i] = list(set(extracted_attributes_tmp[i]))
 
+       if(len(extracted_attributes_tmp[i]) > 1):
+         extracted_attributes.append(extracted_attributes_tmp[i])
+
+    attribute_set_pw['floating'] = list(set(attribute_set_pw['floating']))
+    attribute_set_pw['color'] = list(set(attribute_set_pw['color']))
+    attribute_set_pw['ouverture'] = list(set(attribute_set_pw['ouverture']))
+
+  # Add all the weights and volumes 
   for virtual in virtuals:
     if only_weight:
       additional_attributes.append('poids=' + str(virtual['weight']))
@@ -289,18 +332,36 @@ def setProductAttributes(product, virtuals):
       if not (extracted_volume in attribute_set_pw['volume']):
         attribute_set_pw['volume'].append(extracted_volume)
 
+    # Extract again inline options and associate them to the corresponding value
+    # in the previously created attribute
     else:
       for additional_attribute in virtual['additional_attributes']:
         for i in range(len(extracted_attributes)):
-         if additional_attribute in extracted_attributes[i]:
-          if len(extracted_attributes[i]) > 0:
-            additional_attributes.append(attribute_name_base + '-' + str(i) + '=' + str(extracted_attributes[i].index(additional_attribute)))
-            configurable_variation_labels.append(attribute_name_base + '-' + str(i) + '=' + attribute_name_base + '-' + str(i))
-          break
+         if re.match(r'[MP][0-9](-W)?', additional_attribute):
+           additional_attributes.append('floating=' + additional_attribute.lower())
+           configurable_variation_labels.append('floating=Floating')
 
+         elif re.match(r'(vert|noir|sable|orange|fluorescent|rouge|marron foncé|marron rouge|noisette|bordeaux|havanna|cognac|anthracite)', additional_attribute.lower()):
+           additional_attribute = re.sub(r'\s+', '_', additional_attribute.lower())
+           additional_attribute = re.sub(r'é', 'e', additional_attribute)
+           additional_attributes.append('color=' + additional_attribute)
+           configurable_variation_labels.append('color=Color')
+
+         elif re.match(r'.*\+(long|court)$', additional_attribute.lower()):
+           if(re.match(r'court', additional_attribute.lower())):
+             additional_attributes.append('ouverture=court')
+           else:
+             additional_attributes.append('ouverture=long')
+           configurable_variation_labels.append('ouverture=Ouverture')
+
+         elif additional_attribute in extracted_attributes[i]:
+           additional_attributes.append(attribute_name_base + '-' + str(i) + '=' + str(extracted_attributes[i].index(additional_attribute)))
+           configurable_variation_labels.append(attribute_name_base + '-' + str(i) + '=' + attribute_name_base + '-' + str(i))
+           break
+
+      # Register the new anonymous attributes to show them at the end of the script
       for i in range(len(extracted_attributes)):
-        if len(extracted_attributes[i]) > 0:
-          attribute_set_pw[attribute_name_base + '-' + str(i)] = extracted_attributes[i]
+        attribute_set_pw[attribute_name_base + '-' + str(i)] = extracted_attributes[i]
 
     virtual['additional_attributes'] = ','.join(additional_attributes)
 
